@@ -1,112 +1,172 @@
+# AI 기반 학생 진로탐색 상담 시스템 (Chatbot RAG)
 
-
-- (1) 공통 스키마로 **정규화(JSONL)** 하고
-- (2) **Qdrant 벡터DB**에 문서 청킹/임베딩/적재 후
-- (3) **근거 포함 RAG 질의 API(FastAPI)** 를 제공하며
-- (4) 라벨링 QA로 **자동 평가(Eval)** 를 돌릴 수 있는 MVP입니다.
-
-> ✅ “폴더 = 도메인(과)” 구조를 그대로 활용하도록 설계했습니다.
+이 저장소는 `DATA_ROOT`의 학생 기초정보/상담기록/전문가 라벨링 데이터를 기반으로, **백엔드(FastAPI) + 프론트엔드(Web) 모두 챗봇 중심**으로 동작하는 진로상담 시스템입니다.
 
 ---
 
-## 0) 전제
-- Python 3.11+
-- Docker(선택: Qdrant 실행)
-- (선택) Ollama 또는 OpenAI API Key
+## 1. 시스템 개요
+
+- **목표**: 학생의 흥미·강점·상담 맥락을 반영한 근거 기반 진로탐색 상담 제공
+- **방식**: RAG(Retrieval-Augmented Generation)
+  1. `DATA_ROOT` 원천/라벨링 데이터를 정규화
+  2. 임베딩 후 Qdrant 벡터 검색 인덱스 구축
+  3. `/chat` API로 문맥+근거 기반 답변 생성
+  4. 프론트 챗 UI에서 멀티턴 상담 수행
 
 ---
 
-## 1) 폴더 구조(권장)
-아래처럼 두 루트를 둡니다. 하위 폴더는 과/도메인명으로 자유롭게 구성합니다.
+## 2. 기술 스택 (상세)
 
-```
+### Backend
+- **FastAPI**: REST API 서버 (`/chat`, `/ask`, `/healthz`)
+- **Pydantic**: 요청/응답 스키마 검증
+- **Sentence-Transformers (intfloat/multilingual-e5-small)**: 한글 질의/문서 임베딩
+- **Qdrant**: 벡터 검색 DB (전체 + 도메인별 컬렉션)
+- **LLM Provider (선택형)**
+  - `none`: LLM 없이 근거 요약 기반 폴백 응답
+  - `ollama`: 로컬 모델 연동
+  - `openai`: OpenAI Chat Completions 연동
+- **Python Requests**: Ollama HTTP 호출
+
+### Data Pipeline
+- `scripts/normalize.py`
+  - `학생기초정보`, `상담기록`, `전문가_라벨링` JSON을 통합 파싱
+  - `documents.jsonl`(검색 문서), `qas.jsonl`(평가용 QA) 생성
+- `scripts/index_qdrant.py`
+  - 문서 청킹(char 기반)
+  - 임베딩 생성
+  - `career_all` + `career_{domain}` 컬렉션 업서트
+
+### Frontend
+- **Vanilla JavaScript + TailwindCSS(CDN)**
+- 챗 UI 기능
+  - 멀티턴 대화 이력 전송
+  - 도메인(학교급/카테고리) 필터
+  - 빠른 질문 템플릿
+  - 답변별 근거(citations) 표시
+
+### Infra / Runtime
+- **Docker Compose**: Qdrant 실행
+- **Uvicorn**: FastAPI ASGI 서버 구동
+- **python-dotenv**: `.env` 환경변수 로딩
+
+---
+
+## 3. 데이터 구조 가정
+
+`DATA_ROOT` 예시:
+
+```text
 DATA_ROOT/
   01.원천데이터/
-    소아청소년과/
-      cid_....json
-    응급의학과/
-      cid_....json
+    01. 학교급/
+      01. 초등/
+      02. 중등/
+      03. 고등/
   02.라벨링데이터/
-    소아청소년과/
-      필수_....json
-    내과/
-      필수_....json
+    01. 학교급/
+      01. 초등/
+      02. 중등/
+      03. 고등/
+    02. 추천직업 카테고리/
+      01. 기술계열/
+      02. 서비스계열/
+      03. 생산계열/
+      04. 사무계열/
 ```
 
 ---
 
-## 2) 빠른 시작(로컬)
-### 2-1. 가상환경 + 의존성
+## 4. 실행 방법
+
+### 4-1. 의존성 설치
+
 ```bash
 python3 -m venv .venv
-# windows: .venv\Scripts\activate
 source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
 ```
 
-### 2-2. Qdrant 실행(도커)
+### 4-2. Qdrant 실행
+
 ```bash
 docker compose up -d qdrant
 ```
 
-### 2-3. 정규화(JSONL 생성)
+### 4-3. 데이터 정규화
+
 ```bash
 python3 scripts/normalize.py --data-root DATA_ROOT --out-dir data
-# 결과:
-#   data/documents.jsonl
-#   data/qas.jsonl
 ```
 
-### 2-4. 임베딩 + 인덱싱(Qdrant 적재)
+### 4-4. 임베딩/인덱싱
+
 ```bash
 python3 scripts/index_qdrant.py --docs data/documents.jsonl
 ```
 
-### 2-5. API 실행
+### 4-5. API + 웹 실행
+
 ```bash
 uvicorn api.main:app --reload --port 8000
 ```
 
-테스트:
-```bash
-curl -X POST http://localhost:8000/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query":"CAH 조기진단에 가장 중요한 호르몬 수치는?", "domain":"소아청소년과"}'
-```
+브라우저: `http://localhost:8000`
 
 ---
 
-## 3) LLM 설정(선택)
-기본은 **LLM 없이** “근거 문단 + 간단 요약”을 반환합니다.
-더 자연스러운 답변을 원하면 `.env`를 만들고 아래 중 하나를 사용하세요.
+## 5. API 요약
 
-### 3-1. Ollama(추천: 로컬)
-```env
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1
+### POST `/chat`
+멀티턴 상담 챗 API
+
+요청 예시:
+```json
+{
+  "message": "이 학생에게 맞는 진로를 제안해줘",
+  "domain": "01. 학교급 / 03. 고등",
+  "top_k": 5,
+  "history": [
+    {"role": "user", "content": "학생은 만들기 활동을 좋아해"}
+  ]
+}
 ```
 
-### 3-2. OpenAI
+응답: `answer`, `citations[]`, `used_collection`
+
+### POST `/ask`
+단일 질의 호환 API (`query` 기반)
+
+### GET `/healthz`
+헬스체크 + 설정 확인
+
+---
+
+## 6. LLM 환경변수
+
+`.env` 예시:
+
 ```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=...
+QDRANT_URL=http://localhost:6333
+EMBED_MODEL=intfloat/multilingual-e5-small
+
+# none | ollama | openai
+LLM_PROVIDER=none
+
+# ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.1
+
+# openai
+OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4o-mini
 ```
 
 ---
 
-## 4) 자동 평가(Eval)
-라벨링 QA(JSONL)를 이용해 기본 성능을 점검합니다.
+## 7. 운영 시 권장사항
 
-```bash
-python3 eval/run_eval.py --qas data/qas.jsonl --out eval_report.json
-```
-
----
-
-## 5) 주의(의학 도메인)
-- 본 MVP는 교육/지식검색/참고용입니다.
-- 실제 진단/치료 결정은 반드시 전문가 판단과 최신 가이드라인을 우선하세요.
-- 원문 출처/라이선스 정책을 확인하고, 필요 시 “원문 재배포”가 아닌 “요약/근거 인용 범위 제한” 형태로 운영하세요.
+- 상담 데이터는 민감정보 가능성이 있어 비식별화/접근통제가 필요합니다.
+- LLM 생성 답변은 보조 의견이며, 실제 진학/진로 결정은 교사·상담사와 함께 검토해야 합니다.
+- 학교급/직업카테고리별 분리 인덱스로 검색 품질을 점검하세요.
