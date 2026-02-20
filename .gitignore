@@ -4,3 +4,4 @@ __pycache__/
 qdrant_data/
 *.log
 .env
+DATA_ROOT/
